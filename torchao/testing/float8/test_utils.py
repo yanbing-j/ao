@@ -12,8 +12,9 @@ def get_test_float8_linear_config(
     scaling_type_weight,
     scaling_type_grad_output,
     emulate: bool,
+    device: str,
 ):
-    static_scale_one = torch.tensor([1.0], device="cuda")
+    static_scale_one = torch.tensor([1.0], device=device)
 
     if scaling_type_input is ScalingType.STATIC:
         static_scale_input = static_scale_one

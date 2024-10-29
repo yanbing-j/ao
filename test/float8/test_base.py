@@ -328,7 +328,7 @@ class TestFloat8Linear:
             # verify initialization flags got updated
             assert m_fp8.is_amax_initialized, "Amax was not properly initialized"
 
-    @pytest.mark.parametrize("emulate", [True, False] if is_cuda_8_9 else [True])
+    @pytest.mark.parametrize("emulate", [True, False])
     @pytest.mark.parametrize("x_shape", [(16, 16), (2, 16, 16), (3, 2, 16, 16)])
     @pytest.mark.parametrize(
         "scaling_type_input",
@@ -344,7 +344,7 @@ class TestFloat8Linear:
     )
     @pytest.mark.parametrize("linear_dtype", [torch.bfloat16, torch.float32])
     @pytest.mark.parametrize("linear_bias", [False, True])
-    @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
+    @pytest.mark.parametrize("device", ["cuda", "cpu"])
     def test_linear_from_config_params(
         self,
         x_shape,
@@ -354,15 +354,21 @@ class TestFloat8Linear:
         scaling_type_grad_output: ScalingType,
         linear_dtype: torch.dtype,
         linear_bias: bool,
+        device: str
     ):
-        x = torch.randn(*x_shape, device="cuda", dtype=linear_dtype)
-        m_ref = nn.Linear(16, 32, bias=linear_bias, device="cuda", dtype=linear_dtype)
+        if not (is_cuda_8_9 or device == "cpu") and not emulate:
+            raise unittest.SkipTest(f"Need emulation on the current device")
+        if device == "cuda" and not torch.cuda.is_available():
+            raise unittest.SkipTest(f"CUDA not available")
+        x = torch.ones(*x_shape, device=device, dtype=linear_dtype)
+        m_ref = nn.Linear(16, 32, bias=linear_bias, device=device, dtype=linear_dtype)
 
         config = get_test_float8_linear_config(
             scaling_type_input,
             scaling_type_weight,
             scaling_type_grad_output,
             emulate,
+            device,
         )
 
         self._test_linear_impl(
@@ -407,17 +413,22 @@ class TestFloat8Linear:
             config,
         )
 
-    @pytest.mark.parametrize("emulate", [True, False] if is_cuda_8_9 else [True])
+    @pytest.mark.parametrize("emulate", [True, False])
     @pytest.mark.parametrize(
         "linear_dtype", [torch.float16, torch.bfloat16, torch.float32]
     )
-    @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
+    @pytest.mark.parametrize("device", ["cuda", "cpu"])
     def test_autocast_outputs(
         self,
         emulate: bool,
         linear_dtype: torch.dtype,
+        device: str,
     ):
-        m_ref = nn.Linear(32, 16, device="cuda", dtype=linear_dtype)
+        if not (is_cuda_8_9 or device == "cpu") and not emulate:
+            raise unittest.SkipTest(f"Need emulation on the current device")
+        if device == "cuda" and not torch.cuda.is_available():
+            raise unittest.SkipTest(f"CUDA not available")
+        m_ref = nn.Linear(32, 16, device=device, dtype=linear_dtype)
         config = Float8LinearConfig(
             cast_config_input=CastConfig(scaling_type=ScalingType.DELAYED),
             cast_config_weight=CastConfig(scaling_type=ScalingType.DELAYED),
@@ -427,20 +438,20 @@ class TestFloat8Linear:
         m = Float8Linear.from_float(copy.deepcopy(m_ref), config)
 
         # autocast off
-        x = torch.randn(16, 32, device="cuda", dtype=linear_dtype)
+        x = torch.randn(16, 32, device=device, dtype=linear_dtype)
         if linear_requires_sync(config):
             sync_float8_amax_and_scale_history(m)
         y = m(x)
         assert y.dtype == linear_dtype, f"y.dtype is {y.dtype}, expected {linear_dtype}"
 
         # autocast on
-        with torch.autocast("cuda"):
+        with torch.autocast(device, dtype=torch.half):
             if linear_requires_sync(config):
                 sync_float8_amax_and_scale_history(m)
             y = m(x)
         assert y.dtype == torch.half, f"y.dtype is {y.dtype}, expected {torch.half}"
 
-        with torch.autocast("cuda", dtype=torch.bfloat16):
+        with torch.autocast(device, dtype=torch.bfloat16):
             if linear_requires_sync(config):
                 sync_float8_amax_and_scale_history(m)
             y = m(x)
@@ -451,10 +462,15 @@ class TestFloat8Linear:
     @pytest.mark.parametrize(
         "linear_dtype", [torch.float16, torch.bfloat16, torch.float32]
     )
-    @pytest.mark.parametrize("emulate", [True, False] if is_cuda_8_9 else [True])
-    @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
-    def test_type_cast(self, linear_dtype: torch.dtype, emulate: bool):
-        m = nn.Linear(32, 16, device="cuda", dtype=linear_dtype)
+    @pytest.mark.parametrize("emulate", [True, False])
+    @pytest.mark.parametrize("device", ["cuda", "cpu"])
+    def test_type_cast(self, linear_dtype: torch.dtype, emulate: bool, device: str):
+        if not (is_cuda_8_9 or device == "cpu") and not emulate:
+            raise unittest.SkipTest(f"Need emulation on the current device")
+        if device == "cuda" and not torch.cuda.is_available():
+            raise unittest.SkipTest(f"CUDA not available")
+
+        m = nn.Linear(32, 16, device=device, dtype=linear_dtype)
         config = Float8LinearConfig(emulate=emulate)
         m = Float8Linear.from_float(copy.deepcopy(m), config)
 
@@ -478,20 +494,20 @@ class TestFloat8Linear:
                 ), f"{key}.dtype is {m._buffers[key].dtype}, expected torch.float32"
 
         # autocast off
-        x = torch.randn(16, 32, device="cuda", dtype=linear_dtype)
+        x = torch.randn(16, 32, device=device, dtype=linear_dtype)
         if linear_requires_sync(config):
             sync_float8_amax_and_scale_history(m)
         y = m(x)
         assert y.dtype == linear_dtype, f"y.dtype is {y.dtype}, expected {linear_dtype}"
 
         # autocast on
-        with torch.autocast("cuda"):
+        with torch.autocast(device, dtype=torch.half):
             if linear_requires_sync(config):
                 sync_float8_amax_and_scale_history(m)
             y = m(x)
         assert y.dtype == torch.half, f"y.dtype is {y.dtype}, expected {torch.half}"
 
-        with torch.autocast("cuda", dtype=torch.bfloat16):
+        with torch.autocast(device, dtype=torch.bfloat16):
             if linear_requires_sync(config):
                 sync_float8_amax_and_scale_history(m)
             y = m(x)
@@ -512,32 +528,33 @@ class TestFloat8Linear:
         s = m.__repr__()
         assert "i:dyn_ten,w:del_ten,go:dyn_ten" in s
 
-    @unittest.skipIf(not is_cuda_8_9, "CUDA 8.9 not available")
-    def test_inference_mode(self):
-        x = torch.randn(32, 32, device="cuda")
-        m = nn.Sequential(nn.Linear(32, 32)).cuda()
+    @pytest.mark.parametrize("device", ["cuda", "cpu"])
+    def test_inference_mode(self, device: str):
+        if device == "cuda" and not torch.cuda.is_available():
+            raise unittest.SkipTest(f"CUDA not available")
+        x = torch.randn(32, 32, device=device)
+        m = nn.Sequential(nn.Linear(32, 32)).to(torch.device(device))
         m = convert_to_float8_training(m)
         with torch.inference_mode(mode=True):
             y = m(x)
 
 
 class TestScaledMM:
-    @unittest.skipIf(
-        not is_cuda_8_9,
-        "CUDA not available",
-    )
     @pytest.mark.parametrize(
         "base_dtype", [torch.float16, torch.bfloat16, torch.float32]
     )
     @pytest.mark.parametrize("use_fast_accum", [True, False])
-    def test_scaled_mm_vs_emulated(self, base_dtype, use_fast_accum):
+    @pytest.mark.parametrize("device", ["cuda", "cpu"])
+    def test_scaled_mm_vs_emulated(self, base_dtype, use_fast_accum, device):
+        if device == "cuda" and not is_cuda_8_9:
+            raise unittest.SkipTest(f"CUDA not available")
         torch.manual_seed(42)
         input_dtype = e4m3_dtype
         output_dtype = base_dtype
         compare_type = torch.float32
 
-        a = torch.randn(16, 16, device="cuda", dtype=base_dtype)
-        b = torch.randn(32, 16, device="cuda", dtype=base_dtype).t()
+        a = torch.randn(16, 16, device=device, dtype=base_dtype)
+        b = torch.randn(32, 16, device=device, dtype=base_dtype).t()
 
         a_scale = tensor_to_scale(a, input_dtype).float()
         b_scale = tensor_to_scale(b, input_dtype).float()
@@ -568,10 +585,12 @@ class TestScaledMM:
             atol, rtol = 2e-3, 2e-3
         torch.testing.assert_close(out_scaled_mm, out_emulated, atol=atol, rtol=rtol)
 
-    @unittest.skipIf(not is_cuda_8_9, "CUDA not available")
-    def test_different_configs_error(self):
-        x_fp32 = torch.randn(16, 16, device="cuda")
-        x_scale = torch.tensor(1.0, device="cuda")
+    @pytest.mark.parametrize("device", ["cuda", "cpu"])
+    def test_different_configs_error(self, device):
+        if device == "cuda" and not is_cuda_8_9:
+            raise unittest.SkipTest(f"CUDA not available")
+        x_fp32 = torch.randn(16, 16, device=device)
+        x_scale = torch.tensor(1.0, device=device)
         fp8_dtype = e4m3_dtype
         linear_config_a = LinearMMConfig(
             ScaledMMConfig(False, True, False, False),
@@ -603,21 +622,20 @@ class TestScaledMM:
         ):
             a @ b
 
-    @unittest.skipIf(
-        not is_cuda_8_9,
-        "CUDA not available",
-    )
     @pytest.mark.parametrize(
         "base_dtype", [torch.float16, torch.bfloat16, torch.float32]
     )
     @pytest.mark.parametrize("use_fast_accum", [True, False])
-    def test_pad_inner_dim(self, base_dtype, use_fast_accum):
+    @pytest.mark.parametrize("device", ["cuda", "cpu"])
+    def test_pad_inner_dim(self, base_dtype, use_fast_accum, device):
+        if device == "cuda" and not is_cuda_8_9:
+            raise unittest.SkipTest(f"CUDA not available")
         torch.manual_seed(42)
         input_dtype = e4m3_dtype
         compare_type = torch.float32
 
-        a = torch.randn(16, 41, device="cuda", dtype=base_dtype)
-        b = torch.randn(41, 128, device="cuda", dtype=base_dtype)
+        a = torch.randn(16, 41, device=device, dtype=base_dtype)
+        b = torch.randn(41, 128, device=device, dtype=base_dtype)
 
         a_scale = tensor_to_scale(a, input_dtype).float()
         b_scale = tensor_to_scale(b, input_dtype).float()
@@ -629,13 +647,14 @@ class TestScaledMM:
             b, b_scale, input_dtype, None, GemmInputRole.WEIGHT
         )
 
-        with pytest.raises(
-            RuntimeError,
-            match=re.escape(
-                "Expected trailing dimension of mat1 to be divisible by 16 but got mat1 shape: (16x41."
-            ),
-        ):
-            a_fp8 @ b_fp8
+        if device == "cuda":
+            with pytest.raises(
+                RuntimeError,
+                match=re.escape(
+                    "Expected trailing dimension of mat1 to be divisible by 16 but got mat1 shape: (16x41."
+                ),
+            ):
+                a_fp8 @ b_fp8
 
         scaled_mm_config = ScaledMMConfig(False, use_fast_accum, False, True)
         pad_config = LinearMMConfig(
@@ -699,8 +718,8 @@ class TestNumerics:
             torch.float8_e5m2fnuz,
         ],
     )
-    @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
-    def test_small_amax_float16(self, float8_dtype):
+    @pytest.mark.parametrize("device", ["cuda", "cpu"])
+    def test_small_amax_float16(self, float8_dtype, device):
         # If we calculate scale naively with FP8_MAX_POS / amax,
         # the result may not be representable in fp16. Verify that
         # the way we calculate scales actually works for tensors with
@@ -714,11 +733,13 @@ class TestNumerics:
         #
         #   amax + eps >= fp8_max_pos / fp16_max_pos
 
+        if device == "cuda" and not torch.cuda.is_available():
+            raise unittest.SkipTest(f"CUDA not available")
         float8_max_pos = torch.finfo(float8_dtype).max
         FP16_MAX_POS = torch.finfo(torch.float16).max
 
         target_amax = float8_max_pos / (FP16_MAX_POS + 1e-12)
-        x = torch.tensor([target_amax], dtype=torch.float16, device="cuda")
+        x = torch.tensor([target_amax], dtype=torch.float16, device=device)
         scale = tensor_to_scale(x, float8_dtype)
         assert not torch.any(torch.isinf(scale))
 
