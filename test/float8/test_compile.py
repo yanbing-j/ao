@@ -56,15 +56,16 @@ def _test_compile_base(
     fullgraph: bool,
     config: Float8LinearConfig,
     dtype: torch.dtype,
+    device: str,
 ):
     random.seed(0)
     torch.manual_seed(0)
     x_shape = (16, 16)
     linear_dtype = torch.bfloat16
 
-    x = torch.randn(*x_shape, device="cuda", dtype=linear_dtype).requires_grad_()
+    x = torch.randn(*x_shape, device=device, dtype=linear_dtype).requires_grad_()
     x_ref = copy.deepcopy(x)
-    m_ref = nn.Linear(16, 32, bias=True, device="cuda", dtype=linear_dtype)
+    m_ref = nn.Linear(16, 32, bias=True, device=device, dtype=linear_dtype)
 
     m_fp8 = Float8Linear.from_float(
         copy.deepcopy(m_ref),
@@ -97,9 +98,9 @@ def _test_compile_base(
 @pytest.mark.parametrize(
     "scaling_type_grad_output", [ScalingType.DELAYED, ScalingType.DYNAMIC, ScalingType.STATIC]
 )
-@pytest.mark.parametrize("emulate", [False, True] if is_cuda_8_9 else [True])
+@pytest.mark.parametrize("emulate", [False, True])
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
-@unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
+@pytest.mark.parametrize("device", ["cuda", "cpu"])
 def test_eager_only(
     fullgraph,
     emulate: bool,
@@ -107,24 +108,31 @@ def test_eager_only(
     scaling_type_weight: ScalingType,
     scaling_type_grad_output: ScalingType,
     dtype: torch.dtype,
+    device: str,
 ):
+    if not (is_cuda_8_9 or device == "cpu") and not emulate:
+        raise unittest.SkipTest(f"Need emulation on the current device")
+    if device == "cuda" and not torch.cuda.is_available():
+        raise unittest.SkipTest(f"CUDA not available")
     torch._dynamo.reset()
     config = get_test_float8_linear_config(
         scaling_type_input,
         scaling_type_weight,
         scaling_type_grad_output,
         emulate,
+        device,
     )
     _test_compile_base(
         "eager",
         fullgraph,
         config,
         dtype,
+        device,
     )
 
 
 @pytest.mark.parametrize("fullgraph", [True])
-@pytest.mark.parametrize("emulate", [False, True] if is_cuda_8_9 else [True])
+@pytest.mark.parametrize("emulate", [False, True])
 @pytest.mark.parametrize(
     "scaling_type_input", [ScalingType.DELAYED, ScalingType.DYNAMIC, ScalingType.STATIC]
 )
@@ -135,7 +143,7 @@ def test_eager_only(
     "scaling_type_grad_output", [ScalingType.DELAYED, ScalingType.DYNAMIC, ScalingType.STATIC]
 )
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
-@unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
+@pytest.mark.parametrize("device", ["cuda", "cpu"])
 def test_aot_eager(
     fullgraph,
     emulate: bool,
@@ -143,19 +151,26 @@ def test_aot_eager(
     scaling_type_weight: ScalingType,
     scaling_type_grad_output: ScalingType,
     dtype: torch.dtype,
+    device: str,
 ):
+    if not (is_cuda_8_9 or device == "cpu") and not emulate:
+        raise unittest.SkipTest(f"Need emulation on the current device")
+    if device == "cuda" and not torch.cuda.is_available():
+        raise unittest.SkipTest(f"CUDA not available")
     torch._dynamo.reset()
     config = get_test_float8_linear_config(
         scaling_type_input,
         scaling_type_weight,
         scaling_type_grad_output,
         emulate,
+        device,
     )
     _test_compile_base(
         "aot_eager",
         fullgraph,
         config,
         dtype,
+        device,
     )
 
 
@@ -170,8 +185,8 @@ def test_aot_eager(
 @pytest.mark.parametrize(
     "scaling_type_grad_output", [ScalingType.DELAYED, ScalingType.DYNAMIC, ScalingType.STATIC]
 )
-@unittest.skipIf(not torch.cuda.is_available() or not is_cuda_8_9, "CUDA with float8 support not available")
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
+@pytest.mark.parametrize("device", ["cuda", "cpu"])
 def test_inductor_from_config_params(
     fullgraph,
     emulate: bool,
@@ -179,19 +194,24 @@ def test_inductor_from_config_params(
     scaling_type_weight: ScalingType,
     scaling_type_grad_output: ScalingType,
     dtype: torch.dtype,
+    device: str,
 ):
+    if device == "cuda" and (not torch.cuda.is_available() or not is_cuda_8_9):
+        raise unittest.SkipTest(f"CUDA with float8 support not available")
     torch._dynamo.reset()
     config = get_test_float8_linear_config(
         scaling_type_input,
         scaling_type_weight,
         scaling_type_grad_output,
         emulate,
+        device,
     )
     _test_compile_base(
         "inductor",
         fullgraph,
         config,
         dtype,
+        device,
     )
 
 # Note: there are now too many config combinations to test all of
@@ -203,7 +223,8 @@ def test_inductor_from_config_params(
     [Float8LinearRecipeName.ALL_AXISWISE, Float8LinearRecipeName.LW_AXISWISE_WITH_GW_HP],
 )
 @unittest.skipIf(not is_H100, "CUDA with capability 9.0 or greater not available")
-def test_inductor_from_recipe(recipe_name):
+@pytest.mark.parametrize("device", ["cuda"])
+def test_inductor_from_recipe(recipe_name, device):
     torch._dynamo.reset()
     config = recipe_name_to_linear_config(recipe_name)
     fullgraph = True
@@ -213,6 +234,7 @@ def test_inductor_from_recipe(recipe_name):
         fullgraph,
         config,
         dtype,
+        device,
     )
 
 
@@ -300,7 +322,7 @@ class TestGraphBreaks(DynamoTestCase):
         )
 
 
-@unittest.skipIf(not torch.cuda.is_available() or not is_cuda_8_9, "CUDA with float8 support not available")
+@unittest.skipIf(torch.cuda.is_available() and not is_cuda_8_9, "CUDA with float8 support not available")
 def test_sync_amax_func():
     torch._dynamo.reset()
     cnts = CompileCounterWithBackend("inductor")
@@ -338,13 +360,15 @@ class capture_stderr(list):
         sys.stderr = self.sys_stderr
 
 
-@unittest.skipIf(not torch.cuda.is_available() or not is_cuda_8_9, "CUDA with float8 support not available")
-def test_sync_amax_func_cuda_graph_success():
+@pytest.mark.parametrize("device", ["cuda", "cpu"])
+def test_sync_amax_func_cuda_graph_success(device):
+    if device == "cuda" and (not torch.cuda.is_available() or not is_cuda_8_9):
+        raise unittest.SkipTest(f"CUDA with float8 support not available")
     torch._dynamo.reset()
     with capture_stderr() as stderr:
         my_module = nn.Sequential(
             nn.Linear(16, 32, bias=True), nn.ReLU(), nn.Linear(32, 16, bias=True)
-        ).to("cuda")
+        ).to(torch.device(device))
         config = Float8LinearConfig(
             cast_config_input=CastConfig(scaling_type=ScalingType.DELAYED),
             cast_config_weight=CastConfig(scaling_type=ScalingType.DELAYED),
@@ -355,7 +379,7 @@ def test_sync_amax_func_cuda_graph_success():
             config=config,
         )
         inpt = torch.randn(
-            16, 16, device="cuda", dtype=torch.float32, requires_grad=True
+            16, 16, device=device, dtype=torch.float32, requires_grad=True
         )
         sync_func = torch.compile(
             sync_float8_amax_and_scale_history, mode="reduce-overhead", fullgraph=True
@@ -367,10 +391,6 @@ def test_sync_amax_func_cuda_graph_success():
     assert "skipping cudagraphs due to mutaton on input" not in stderr[0]
 
 
-@unittest.skipIf(
-        not is_cuda_8_9,
-        "CUDA not available",
-    )
 @pytest.mark.parametrize(
     "dtype",
     [
@@ -379,10 +399,13 @@ def test_sync_amax_func_cuda_graph_success():
         torch.float16,
     ],
 )
-def test_dynamic_scale_numeric_parity(dtype: torch.dtype):
+@pytest.mark.parametrize("device", ["cuda", "cpu"])
+def test_dynamic_scale_numeric_parity(dtype: torch.dtype, device: str):
+    if device == "cuda" and not is_cuda_8_9:
+        raise unittest.SkipTest(f"CUDA not available")
     scaling_type_weight = ScalingType.DYNAMIC
     torch.manual_seed(42)
-    hp_tensor1 = torch.randn(16, 16, device="cuda", dtype=dtype)
+    hp_tensor1 = torch.randn(16, 16, device=device, dtype=dtype)
     hp_tensor2 = hp_tensor1.detach().clone()
     float8_config = Float8LinearConfig(
         cast_config_weight=CastConfig(scaling_type=scaling_type_weight),

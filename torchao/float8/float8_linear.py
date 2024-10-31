@@ -93,7 +93,7 @@ class manual_float8_matmul_with_args_in_float8(torch.autograd.Function):
         # calculate grad_input
         grad_input = torch.mm(
             grad_output_fp8_reshaped,
-            weight_fp8_t.t(),
+            weight_fp8_t.t(),#.contiguous(),
         )
         grad_input = grad_input.reshape(
             *grad_output_fp8_orig_shape[:-1], grad_input.shape[-1]
@@ -106,7 +106,7 @@ class manual_float8_matmul_with_args_in_float8(torch.autograd.Function):
         # Note: the variant below is slightly faster on LLaMa 3 8B pretraining
         # compared to than calculating `grad_weight_t = input_fp8_t @ grad_output_fp8_reshaped`
         grad_weight = torch.mm(
-            grad_output_fp8_reshaped.t(),
+            grad_output_fp8_reshaped.t(),#.contiguous(),
             input_fp8_reshaped,
         )
 
@@ -504,7 +504,12 @@ class Float8Linear(torch.nn.Linear):
             self.linear_mm_config,
             gemm_input_role=GemmInputRole.WEIGHT,
         )
-        return weight_fp8.t()
+        if weight.device == torch.device("cpu"):
+            # Without contiguous, in cpp backend, it will be reordered to a contiguous one,
+            # and will encounter inductor error.
+            return weight_fp8.t().contiguous()
+        else:
+            return weight_fp8.t()
 
     def cast_output_to_float8_in_bw(self, output: torch.Tensor) -> torch.Tensor:
         if self.scaling_type_grad_output is ScalingType.DELAYED:
