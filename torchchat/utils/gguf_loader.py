@@ -24,6 +24,9 @@ from torchchat.utils.quantize import (
     pack_scales_and_zeros,
 )
 
+from torchao.dtypes.utils import is_device
+from torchao.utils import TORCH_VERSION_AT_LEAST_2_6
+
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -122,12 +125,20 @@ def linear_int4(input, weight_int4pack, scales_and_zeros, out_features, groupsiz
             input.dtype
         )  # cast back to input.dtype
     else:
-        c = torch.ops.aten._weight_int4pack_mm(
-            input,
-            weight_int4pack,
-            groupsize,
-            scales_and_zeros,
-        )
+        if TORCH_VERSION_AT_LEAST_2_6:
+            c = torch.ops.aten._weight_int4pack_mm_for_cpu(
+                input,
+                weight_int4pack,
+                groupsize,
+                scales_and_zeros,
+            )
+        else:
+            c = torch.ops.aten._weight_int4pack_mm(
+                input,
+                weight_int4pack,
+                groupsize,
+                scales_and_zeros,
+            )
     new_shape = origin_input_size[:-1] + (out_features,)
     c = c.reshape(new_shape)
     return c
@@ -608,10 +619,16 @@ def load_model_and_state_dict(
             if load_state_dict:
                 q, s, z = Q4_0.unpack(t)
                 scales_and_zeros = pack_scales_and_zeros(s, z)
-                q_uint8 = (q[::, ::2] << 4 | q[::, 1::2]).to(torch.uint8)
-                weight_int4pack = torch.ops.aten._convert_weight_to_int4pack(
-                    q_uint8, inner_k_tiles
-                )
+                q_tmp = q
+                if is_device(q.device.type, "cpu") and TORCH_VERSION_AT_LEAST_2_6:
+                    weight_int4pack = torch.ops.aten._convert_weight_to_int4pack_for_cpu(
+                        q_tmp, inner_k_tiles
+                    )
+                else:
+                    q_tmp = (q[::, ::2] << 4 | q[::, 1::2]).to(torch.uint8)
+                    weight_int4pack = torch.ops.aten._convert_weight_to_int4pack(
+                        q_tmp, inner_k_tiles
+                    )
                 state_dict[f"{fqn}.weight"] = weight_int4pack
                 state_dict[f"{fqn}.scales_and_zeros"] = scales_and_zeros
 
